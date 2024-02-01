@@ -1,0 +1,53 @@
+package main
+
+import (
+	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"sync"
+)
+
+type store struct {
+	mu sync.RWMutex
+	m  map[string]string
+}
+
+func newStore() *store { return &store{m: make(map[string]string)} }
+
+func (s *store) put(code, url string) { s.mu.Lock(); s.m[code] = url; s.mu.Unlock() }
+func (s *store) get(code string) (string, bool) {
+	s.mu.RLock(); defer s.mu.RUnlock()
+	u, ok := s.m[code]
+	return u, ok
+}
+
+func shortCode() string {
+	b := make([]byte, 4)
+	rand.Read(b)
+	return fmt.Sprintf("%x", b)
+}
+
+type handler struct{ s *store }
+
+func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var req map[string]string
+		json.NewDecoder(r.Body).Decode(&req)
+		code := shortCode()
+		h.s.put(code, req["url"])
+		json.NewEncoder(w).Encode(map[string]string{"short": "http://" + r.Host + "/" + code})
+		return
+	}
+	code := r.URL.Path[1:]
+	if u, ok := h.s.get(code); ok {
+		http.Redirect(w, r, u, http.StatusFound)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func main() {
+	s := newStore()
+	http.ListenAndServe(":8080", handler{s: s})
+}
